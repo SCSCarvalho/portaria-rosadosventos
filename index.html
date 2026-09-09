@@ -976,6 +976,10 @@ const MORADORES = (() => {
       $("mSalvar").onclick = async () => {
         if (!f.nome.trim()||!f.unidade.trim()) return flash("Nome e unidade são obrigatórios.","err");
         if (!f.porteiro.trim()) return flash("Informe quem está cadastrando/atualizando.","err");
+        if (editando !== "novo"){
+          const ok = await pedirMaster();
+          if (!ok) return;
+        }
         const tel = onlyDigits(f.telefone);
         const normUnid = s => norm(s).replace(/[^a-z0-9]/g,"");
         if (editando==="novo"){
