@@ -145,15 +145,17 @@ document.getElementById("fileFotoGlobal").addEventListener("change", async (e) =
   if (_onFotoCapturada) await _onFotoCapturada(file);
 });
 
-function fotoModal(srcOuLista){
+function fotoModal(srcOuLista, protocolo){
   const lista = Array.isArray(srcOuLista) ? srcOuLista : [srcOuLista];
+  const nomeBase = (protocolo || "encomenda").replace(/[^a-zA-Z0-9-]/g,"");
+  const botaoBaixar = (src,i) => `<a href="${src}" download="${nomeBase}-foto${i+1}.jpg" onclick="event.stopPropagation()" style="display:inline-block;margin-top:6px;background:var(--kraft);color:#12333B;font-weight:700;padding:8px 16px;border-radius:8px;text-decoration:none;font-size:13px">⬇️ Baixar foto ${lista.length>1?(i+1):""} em alta qualidade</a>`;
   const bg = document.getElementById("modalbg");
   if (lista.length <= 1){
-    bg.innerHTML = `<img src="${lista[0]}">`;
+    bg.innerHTML = `<div style="text-align:center" onclick="event.stopPropagation()"><img src="${lista[0]}" style="max-width:94vw;max-height:80vh;border-radius:10px;display:block;margin:0 auto"><div>${botaoBaixar(lista[0],0)}</div></div>`;
   } else {
     bg.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">
       <div class="center" style="color:#fff;font-weight:700">${lista.length} fotos deste registro</div>
-      ${lista.map(src=>`<img src="${src}" style="max-width:90vw;border-radius:10px">`).join("")}
+      ${lista.map((src,i)=>`<div style="text-align:center"><img src="${src}" style="max-width:90vw;border-radius:10px"><div>${botaoBaixar(src,i)}</div></div>`).join("")}
     </div>`;
   }
   bg.style.display = "grid";
@@ -441,7 +443,7 @@ const RECEBER = (() => {
           </div>
           <div class="row" style="margin-top:16px">
             <button class="primary" id="btnOutra" style="flex:1">📷 Registrar outra encomenda</button>
-            <button class="ghost" id="btnVerPend">Ver pendentes</button>
+            <button style="background:var(--kraft);color:#12333B;border:none;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer" id="btnVerPend">📥 Ver pendentes</button>
           </div>
         </div>`;
     }
@@ -579,10 +581,11 @@ const RECEBER = (() => {
         const ref = await db.collection("moradores").add({
           nome: f.nomeDest.trim(), unidade: f.unidade.trim(), telefone: tel, email: "",
           atualizadoEm: new Date().toISOString(), pendenteAtualizacao: tel.length<10,
+          cadastradoPor: f.porteiro.trim() ? `${f.porteiro.trim()} (via Receber)` : "Receber (não identificado)",
         });
         moradorId = ref.id;
       } else if ((!sel || onlyDigits(sel.telefone).length<10) && tel.length>=10){
-        await db.collection("moradores").doc(moradorId).update({ telefone: tel, pendenteAtualizacao:false, atualizadoEm: new Date().toISOString() });
+        await db.collection("moradores").doc(moradorId).update({ telefone: tel, pendenteAtualizacao:false, atualizadoEm: new Date().toISOString(), ultimaAtualizacaoPor: f.porteiro.trim() ? `${f.porteiro.trim()} (via Receber)` : "Receber (não identificado)" });
       }
 
       const { protocolo } = await novoProtocolo();
@@ -732,7 +735,7 @@ const PENDENTES = (() => {
       const $ = id => document.getElementById(id);
       const e = STATE.encomendas.find(x=>x.id===retirandoId);
       if ($("thumbRetirada")) $("thumbRetirada").onclick = async () => {
-        fotoModal(await buscarFotosFull(e.id, e.thumb));
+        fotoModal(await buscarFotosFull(e.id, e.thumb), e.protocolo);
       };
       $("inCodigo").oninput = ev => { codigoInf = ev.target.value.toUpperCase(); render(); };
       $("inQuem").oninput = ev => { r.quem = ev.target.value; };
@@ -771,7 +774,7 @@ const PENDENTES = (() => {
     });
     document.querySelectorAll(".pend-thumb").forEach(b => b.onclick = async () => {
       const e = STATE.encomendas.find(x=>x.id===b.dataset.id);
-      fotoModal(await buscarFotosFull(e.id, e.thumb));
+      fotoModal(await buscarFotosFull(e.id, e.thumb), e.protocolo);
     });
     document.querySelectorAll(".link-wa-simples").forEach(a => a.onclick = () => {
       db.collection("encomendas").doc(a.dataset.id).update({ notificadaEm: new Date().toISOString() });
@@ -795,7 +798,7 @@ const PENDENTES = (() => {
 
 /* ======================= MORADORES ======================= */
 const MORADORES = (() => {
-  let busca = ""; let editando = null; let f = { nome:"", unidade:"", telefone:"", email:"" };
+  let busca = ""; let editando = null; let f = { nome:"", unidade:"", telefone:"", email:"", porteiro:"" };
   let importando = false; let linhasImport = []; let erroImport = "";
 
   function parseCSV(texto){
@@ -858,6 +861,10 @@ const MORADORES = (() => {
         <label class="f">Unidade (bloco/apto) *</label><input id="mUnidade" value="${esc(f.unidade)}" placeholder="Ex.: B2-104">
         <label class="f">WhatsApp (com DDD)</label><input id="mTel" value="${esc(f.telefone)}" placeholder="(86) 99999-0000" inputmode="tel">
         <label class="f">E-mail</label><input id="mEmail" type="email" value="${esc(f.email)}">
+        <label class="f">${editando==="novo"?"Quem está cadastrando":"Quem está atualizando"} *</label>
+        ${STATE.config.porteiros.length
+          ? `<select id="mPorteiro"><option value="">Selecione…</option>${STATE.config.porteiros.map(p=>`<option ${p===f.porteiro?"selected":""}>${esc(p)}</option>`).join("")}</select>`
+          : `<input id="mPorteiro" value="${esc(f.porteiro)}" placeholder="Seu nome">`}
         <div class="row" style="margin-top:18px">
           <button class="primary" id="mSalvar" style="flex:1">Salvar cadastro</button>
           <button class="ghost" id="mCancelar">Cancelar</button>
@@ -894,9 +901,9 @@ const MORADORES = (() => {
       </div>
       ${pendAtu>0?`<div style="background:var(--kraftSoft);border:1.5px dashed var(--kraft);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:14px">⚠️ <b>${pendAtu}</b> cadastro(s) com dados incompletos (sem telefone).</div>`:""}
       <div class="card" style="padding:0;overflow-x:auto">
-        <table><thead><tr><th>Unidade</th><th>Nome</th><th>WhatsApp</th><th>Situação</th><th></th></tr></thead>
+        <table><thead><tr><th>Unidade</th><th>Nome</th><th>WhatsApp</th><th>Situação</th><th>Cadastrado por</th><th></th></tr></thead>
         <tbody>
-          ${lista.length===0?`<tr><td colspan="5" class="center muted" style="padding:24px">Nenhum morador cadastrado ainda.</td></tr>`:""}
+          ${lista.length===0?`<tr><td colspan="6" class="center muted" style="padding:24px">Nenhum morador cadastrado ainda.</td></tr>`:""}
           ${lista.map((m,i)=>{
             const mesmaUnidadeAnterior = i>0 && norm(lista[i-1].unidade).replace(/[^a-z0-9]/g,"")===norm(m.unidade).replace(/[^a-z0-9]/g,"");
             const borda = !mesmaUnidadeAnterior && i>0 ? `border-top:2px solid var(--line);` : "";
@@ -904,6 +911,7 @@ const MORADORES = (() => {
             <td style="font-weight:700${mesmaUnidadeAnterior?";color:var(--mut)":""}">${mesmaUnidadeAnterior?"↳":esc(m.unidade)}</td><td>${esc(m.nome)}</td>
             <td class="mono">${onlyDigits(m.telefone)?fmtPhone(m.telefone):"—"}</td>
             <td>${m.pendenteAtualizacao?`<span class="tag" style="background:var(--dangerSoft);color:var(--danger)">atualizar dados</span>`:`<span class="tag" style="background:var(--okSoft);color:var(--ok)">completo</span>`}</td>
+            <td style="font-size:12.5px" class="muted">${esc(m.cadastradoPor || "—")}${m.ultimaAtualizacaoPor?`<br><span style="font-size:11px">últ. edição: ${esc(m.ultimaAtualizacaoPor)}</span>`:""}</td>
             <td style="white-space:nowrap"><button class="ghost m-editar" data-id="${m.id}" style="padding:6px 10px;margin-right:6px">✏️ Editar</button><button class="ghost m-excluir" data-id="${m.id}" style="padding:6px 10px;color:var(--danger)">Excluir</button></td>
           </tr>`;}).join("")}
         </tbody></table>
@@ -945,7 +953,7 @@ const MORADORES = (() => {
             : STATE.moradores.find(m => normUnid(m.unidade)===normUnid(unidade) && norm(m.nome)===norm(nome)));
           const repetidoNoArquivo = jaImportadosNestaLeva.includes(chave);
           if (existenteNoBanco || repetidoNoArquivo){ ignorados++; continue; }
-          await db.collection("moradores").add({ nome, unidade, telefone:tel, email:"", atualizadoEm:new Date().toISOString(), pendenteAtualizacao: tel.length<10 || !unidade });
+          await db.collection("moradores").add({ nome, unidade, telefone:tel, email:"", atualizadoEm:new Date().toISOString(), pendenteAtualizacao: tel.length<10 || !unidade, cadastradoPor: "Importação (planilha)" });
           jaImportadosNestaLeva.push(chave);
           criados++;
         }
@@ -960,9 +968,14 @@ const MORADORES = (() => {
       $("mUnidade").oninput = e=>f.unidade=e.target.value;
       $("mTel").oninput = e=>f.telefone=e.target.value;
       $("mEmail").oninput = e=>f.email=e.target.value;
+      if ($("mPorteiro")){
+        $("mPorteiro").onchange = e=>f.porteiro=e.target.value;
+        if ($("mPorteiro").tagName==="INPUT") $("mPorteiro").oninput = e=>f.porteiro=e.target.value;
+      }
       $("mCancelar").onclick = () => { editando=null; render(); };
       $("mSalvar").onclick = async () => {
         if (!f.nome.trim()||!f.unidade.trim()) return flash("Nome e unidade são obrigatórios.","err");
+        if (!f.porteiro.trim()) return flash("Informe quem está cadastrando/atualizando.","err");
         const tel = onlyDigits(f.telefone);
         const normUnid = s => norm(s).replace(/[^a-z0-9]/g,"");
         if (editando==="novo"){
@@ -984,16 +997,16 @@ const MORADORES = (() => {
           }
         }
         const payload = { nome:f.nome.trim(), unidade:f.unidade.trim(), telefone:tel, email:f.email.trim(), atualizadoEm:new Date().toISOString(), pendenteAtualizacao: tel.length<10 };
-        if (editando==="novo") await db.collection("moradores").add(payload);
-        else await db.collection("moradores").doc(editando.id).update(payload);
+        if (editando==="novo") await db.collection("moradores").add({ ...payload, cadastradoPor: f.porteiro.trim() });
+        else await db.collection("moradores").doc(editando.id).update({ ...payload, ultimaAtualizacaoPor: f.porteiro.trim() });
         editando=null; flash("Cadastro salvo."); render();
       };
       return;
     }
     $("mBusca").oninput = e=>{ busca=e.target.value; render(); };
     $("mImportar").onclick = () => { importando=true; linhasImport=[]; erroImport=""; render(); };
-    $("mNovo").onclick = () => { editando="novo"; f={nome:"",unidade:"",telefone:"",email:""}; render(); };
-    document.querySelectorAll(".m-editar").forEach(b=>b.onclick=()=>{ const m=STATE.moradores.find(x=>x.id===b.dataset.id); editando=m; f={nome:m.nome,unidade:m.unidade,telefone:fmtPhone(m.telefone),email:m.email||""}; render(); });
+    $("mNovo").onclick = () => { editando="novo"; f={nome:"",unidade:"",telefone:"",email:"",porteiro:f.porteiro||""}; render(); };
+    document.querySelectorAll(".m-editar").forEach(b=>b.onclick=()=>{ const m=STATE.moradores.find(x=>x.id===b.dataset.id); editando=m; f={nome:m.nome,unidade:m.unidade,telefone:fmtPhone(m.telefone),email:m.email||"",porteiro:""}; render(); });
     document.querySelectorAll(".m-excluir").forEach(b=>b.onclick=async ()=>{
       const ok = await pedirMaster();
       if (!ok) return;
@@ -1007,13 +1020,17 @@ const MORADORES = (() => {
 
 /* ======================= RELATÓRIOS ======================= */
 const RELATORIOS = (() => {
-  let de="", ate="", unid="";
+  let de="", ate="", unid="", status="todos";
   function filtradas(){
     return STATE.encomendas.filter(e=>{
       const d = new Date(e.recebidaEm);
       if (de && d < new Date(de+"T00:00:00")) return false;
       if (ate && d > new Date(ate+"T23:59:59")) return false;
       if (unid && !e.unidade.toLowerCase().includes(unid.toLowerCase())) return false;
+      if (status==="pendentes" && e.status!=="pendente") return false;
+      if (status==="entregues" && e.status!=="entregue") return false;
+      if (status==="sem_aviso" && (e.status!=="pendente" || e.notificadaEm)) return false;
+      if (status==="sem_codigo" && !(e.status==="entregue" && e.codigoValidado===false)) return false;
       return true;
     });
   }
@@ -1035,6 +1052,15 @@ const RELATORIOS = (() => {
           <div><label class="f" style="margin-top:0">De</label><input type="date" id="rDe" value="${de}"></div>
           <div><label class="f" style="margin-top:0">Até</label><input type="date" id="rAte" value="${ate}"></div>
           <div><label class="f" style="margin-top:0">Unidade</label><input id="rUnid" value="${esc(unid)}" placeholder="Todas"></div>
+          <div><label class="f" style="margin-top:0">Status</label>
+            <select id="rStatus">
+              <option value="todos" ${status==="todos"?"selected":""}>Todos</option>
+              <option value="pendentes" ${status==="pendentes"?"selected":""}>Só pendentes</option>
+              <option value="entregues" ${status==="entregues"?"selected":""}>Só entregues</option>
+              <option value="sem_aviso" ${status==="sem_aviso"?"selected":""}>Pendentes sem aviso</option>
+              <option value="sem_codigo" ${status==="sem_codigo"?"selected":""}>Entregues sem código</option>
+            </select>
+          </div>
           <button class="primary" id="rExport">⬇️ Exportar CSV (Excel)</button>
           <button class="ghost" id="rExportPdf">📄 Exportar PDF (comprovante)</button>
         </div>
@@ -1067,11 +1093,12 @@ const RELATORIOS = (() => {
     const $ = id=>document.getElementById(id);
     document.querySelectorAll(".rel-thumb").forEach(img => img.onclick = async () => {
       const e = STATE.encomendas.find(x=>x.id===img.dataset.id);
-      fotoModal(await buscarFotosFull(e.id, e.thumb));
+      fotoModal(await buscarFotosFull(e.id, e.thumb), e.protocolo);
     });
     $("rDe").onchange = e=>{ de=e.target.value; render(); };
     $("rAte").onchange = e=>{ ate=e.target.value; render(); };
     $("rUnid").oninput = e=>{ unid=e.target.value; render(); };
+    $("rStatus").onchange = e=>{ status=e.target.value; render(); };
     $("rExport").onclick = () => {
       const sep=";"; const escv = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
       const head = ["Protocolo","Codigo retirada","Status","Unidade","Destinatario","Tipo","Transportadora","Rastreio","Foto","Recebida em","Porteiro recebimento","Notificada em","Entregue em","Retirada por","Relacao","Codigo validado","Justificativa sem codigo","Porteiro entrega","Horas ate retirada","Observacoes"];
