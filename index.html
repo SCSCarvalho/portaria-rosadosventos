@@ -208,7 +208,7 @@ function processarFoto(file){
         return c.toDataURL("image/jpeg",q);
       };
       URL.revokeObjectURL(url);
-      resolve({ full: make(1400,0.82), thumb: make(260,0.65) });
+      resolve({ full: make(1400,0.82), thumb: make(140,0.55) });
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("img")); };
     img.src = url;
@@ -283,6 +283,11 @@ function iniciar(){
   auth = firebase.auth();
   db = firebase.firestore();
 
+  // Cache local: o aparelho guarda o que já baixou e só busca o que mudou.
+  // Sem isso, cada abertura do app rebaixava todos os dados do zero — e isso
+  // era o principal consumo da cota gratuita diária do Firestore.
+  try { db.enablePersistence({ synchronizeTabs: true }).catch(()=>{}); } catch(e){}
+
   auth.signInAnonymously().catch(err => {
     document.getElementById("app").innerHTML = `<div class="wrap"><div class="card">Erro ao conectar: ${esc(err.message)}. Confira as chaves do Firebase e as regras de autenticação anônima.</div></div>`;
     document.getElementById("app").style.display = "block";
@@ -301,8 +306,12 @@ function iniciar(){
       STATE.moradores = snap.docs.map(d => ({ id:d.id, ...d.data() }));
       if (GATE_OK) render();
     });
-    db.collection("encomendas").orderBy("recebidaEm","desc").onSnapshot(snap => {
-      STATE.encomendas = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    // Em tempo real, SÓ as pendentes (poucas). O histórico de entregues é carregado
+    // por período, só quando a aba Relatórios é aberta — assim o app não baixa
+    // a história inteira (com fotos) toda vez que alguém o abre.
+    db.collection("encomendas").where("status","==","pendente").onSnapshot(snap => {
+      STATE.encomendas = snap.docs.map(d => ({ id:d.id, ...d.data() }))
+        .sort((a,b) => (b.recebidaEm||"").localeCompare(a.recebidaEm||""));
       READY = true;
       if (GATE_OK) render();
     });
@@ -590,6 +599,10 @@ const RECEBER = (() => {
 
       const { protocolo } = await novoProtocolo();
       const codigo = gerarCodigo();
+      // O registro principal fica LEVE: só uma miniatura pequena (para a lista).
+      // As fotos grandes (e as miniaturas de cada uma) ficam em documentos separados,
+      // carregados só quando alguém toca para ampliar — isso é o que evita baixar
+      // imagens pesadas toda vez que o app abre.
       const enc = {
         protocolo, codigoRetirada: codigo, moradorId,
         nomeDest: f.nomeDest.trim(), unidade: f.unidade.trim(),
@@ -597,19 +610,17 @@ const RECEBER = (() => {
         porteiroReceb: f.porteiro, recebidaEm: new Date().toISOString(),
         status: "pendente", notificadaEm: null,
         thumb: fotos.length ? fotos[0].thumb : null,
-        thumbs: fotos.map(ft => ft.thumb),
         temFoto: fotos.length > 0,
         qtdFotos: fotos.length,
       };
       const ref = await db.collection("encomendas").add(enc);
       if (fotos.length) {
-        // cada foto vira um documento separado (evita o limite de 1MB por registro
-        // quando há várias fotos juntas de alta qualidade)
         await Promise.all(fotos.map((ft,i) =>
-          db.collection("fotos").doc(ref.id).collection("itens").doc(String(i)).set({ full: ft.full })
+          db.collection("fotos").doc(ref.id).collection("itens").doc(String(i)).set({ full: ft.full, thumb: ft.thumb })
         ));
       }
-      registrada = { id: ref.id, ...enc };
+      // em memória (só para a tela de confirmação), mantemos todas as miniaturas
+      registrada = { id: ref.id, ...enc, thumbs: fotos.map(ft => ft.thumb) };
       etapa = "pronto";
       flash(`Encomenda ${protocolo} registrada${fotos.length>1?` com ${fotos.length} fotos`:""}.`);
       render();
@@ -1024,9 +1035,46 @@ const MORADORES = (() => {
 
 /* ======================= RELATÓRIOS ======================= */
 const RELATORIOS = (() => {
-  let de="", ate="", unid="", status="todos";
+  const fmtInput = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  // período padrão: últimos 30 dias (evita carregar a história inteira)
+  let de = fmtInput(new Date(Date.now()-30*864e5)), ate = fmtInput(new Date()), unid="", status="todos";
+  let historico = [];        // encomendas do período carregado (pendentes + entregues)
+  let chaveCarregada = "";   // qual período está carregado
+  let carregando = false;
+  let erroCarga = "";
+
+  function periodoISO(){
+    const dIni = de ? new Date(de+"T00:00:00") : new Date(Date.now()-30*864e5);
+    const dFim = ate ? new Date(ate+"T23:59:59.999") : new Date();
+    return { ini: dIni.toISOString(), fim: dFim.toISOString() };
+  }
+
+  // Busca ÚNICA (não em tempo real) das encomendas do período — só quando a aba é aberta
+  // ou o período muda. Isso substitui o antigo carregamento da história inteira.
+  async function carregarHistorico(){
+    const { ini, fim } = periodoISO();
+    const chave = ini+"|"+fim;
+    if (chave === chaveCarregada || carregando) return;
+    carregando = true; erroCarga = ""; render();
+    try {
+      const snap = await db.collection("encomendas").where("recebidaEm",">=",ini).where("recebidaEm","<=",fim).get();
+      historico = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    } catch (e){
+      historico = [];
+      erroCarga = "Não foi possível carregar o histórico agora. Tente novamente em instantes.";
+    }
+    chaveCarregada = chave; // marca como tentado (com ou sem erro) para não repetir sozinho
+    carregando = false; render();
+  }
+
+  function base(){
+    // usa o histórico do período, mas com as pendentes sempre na versão mais atual (tempo real)
+    const pendAtuais = new Map(STATE.encomendas.map(e => [e.id, e]));
+    const lista = historico.map(e => pendAtuais.get(e.id) || e);
+    return lista.sort((a,b) => (b.recebidaEm||"").localeCompare(a.recebidaEm||""));
+  }
   function filtradas(){
-    return STATE.encomendas.filter(e=>{
+    return base().filter(e=>{
       const d = new Date(e.recebidaEm);
       if (de && d < new Date(de+"T00:00:00")) return false;
       if (ate && d > new Date(ate+"T23:59:59")) return false;
@@ -1039,6 +1087,8 @@ const RELATORIOS = (() => {
     });
   }
   function html(){
+    const { ini, fim } = periodoISO();
+    if ((ini+"|"+fim) !== chaveCarregada && !carregando) setTimeout(carregarHistorico, 0);
     const f = filtradas();
     const entregues = f.filter(e=>e.status==="entregue");
     const pend = f.filter(e=>e.status==="pendente");
@@ -1068,6 +1118,9 @@ const RELATORIOS = (() => {
           <button class="primary" id="rExport">⬇️ Exportar CSV (Excel)</button>
           <button class="ghost" id="rExportPdf">📄 Exportar PDF (comprovante)</button>
         </div>
+        ${carregando ? `<div class="muted" style="font-size:13px;margin-top:10px">⏳ Carregando histórico do período…</div>` : ""}
+        ${erroCarga ? `<div style="color:var(--danger);font-size:13px;margin-top:10px">${esc(erroCarga)} <button class="ghost" id="rRecarregar" style="padding:4px 10px;font-size:12px">Tentar de novo</button></div>` : ""}
+        <div class="muted" style="font-size:12px;margin-top:8px">O relatório mostra o período escolhido (padrão: últimos 30 dias). Para períodos maiores, ajuste as datas.</div>
       </div>
       <div class="row" style="margin-bottom:16px">${kpi("Registradas",f.length)}${kpi("Aguardando retirada",pend.length,pend.length?"#8a5a00":"var(--ok)")}${kpi("Entregues",entregues.length,"var(--ok)")}${kpi("Tempo médio retirada",tempos.length?tMedio+"h":"—")}${kpi("Pendentes sem aviso",naoAvisadas,naoAvisadas?"var(--danger)":"var(--ok)")}${kpi("Entregas sem código",semCodigo,semCodigo?"var(--danger)":"var(--ok)")}</div>
       ${topU.length?`<div class="card">
@@ -1096,13 +1149,15 @@ const RELATORIOS = (() => {
   function bind(){
     const $ = id=>document.getElementById(id);
     document.querySelectorAll(".rel-thumb").forEach(img => img.onclick = async () => {
-      const e = STATE.encomendas.find(x=>x.id===img.dataset.id);
+      const e = base().find(x=>x.id===img.dataset.id) || STATE.encomendas.find(x=>x.id===img.dataset.id);
+      if (!e) return;
       fotoModal(await buscarFotosFull(e.id, e.thumb), e.protocolo);
     });
     $("rDe").onchange = e=>{ de=e.target.value; render(); };
     $("rAte").onchange = e=>{ ate=e.target.value; render(); };
     $("rUnid").oninput = e=>{ unid=e.target.value; render(); };
     $("rStatus").onchange = e=>{ status=e.target.value; render(); };
+    if ($("rRecarregar")) $("rRecarregar").onclick = () => { chaveCarregada=""; carregarHistorico(); };
     $("rExport").onclick = () => {
       const sep=";"; const escv = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
       const head = ["Protocolo","Codigo retirada","Status","Unidade","Destinatario","Tipo","Transportadora","Rastreio","Foto","Recebida em","Porteiro recebimento","Notificada em","Entregue em","Retirada por","Relacao","Codigo validado","Justificativa sem codigo","Porteiro entrega","Horas ate retirada","Observacoes"];
