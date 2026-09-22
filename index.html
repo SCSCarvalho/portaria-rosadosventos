@@ -1135,10 +1135,13 @@ const RELATORIOS = (() => {
   }
 
   function base(){
-    // usa o histórico do período, mas com as pendentes sempre na versão mais atual (tempo real)
-    const pendAtuais = new Map(STATE.encomendas.map(e => [e.id, e]));
-    const lista = historico.map(e => pendAtuais.get(e.id) || e);
-    return lista.sort((a,b) => (b.recebidaEm||"").localeCompare(a.recebidaEm||""));
+    // junta o histórico do período com as pendentes ao vivo — as pendentes SEMPRE
+    // entram, mesmo que ainda não estejam no "retrato" que foi buscado do banco
+    // (por exemplo, uma encomenda registrada agora mesmo, antes do histórico atualizar)
+    const porId = new Map();
+    historico.forEach(e => porId.set(e.id, e));
+    STATE.encomendas.forEach(e => porId.set(e.id, e)); // pendentes ao vivo sempre sobrescrevem/entram
+    return Array.from(porId.values()).sort((a,b) => (b.recebidaEm||"").localeCompare(a.recebidaEm||""));
   }
   function filtradas(){
     const lista = base().filter(e=>{
