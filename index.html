@@ -635,6 +635,7 @@ const PENDENTES = (() => {
   let busca = ""; let retirandoId = null; let codigoInf = ""; 
   let r = { quem:"", relacao:"Próprio morador", porteiro:"", semCodigo:false, justificativa:"" };
   let codigosRevelados = new Set(); // ids de encomendas cujo código foi liberado nesta sessão (senha master)
+  let regularizandoId = null; let reg = { justificativa:"", porteiro:"" };
 
   function html(){
     const lista = STATE.encomendas.filter(e=>e.status==="pendente").filter(e=>{
@@ -685,6 +686,29 @@ const PENDENTES = (() => {
           </div>
         </div>`;
     }
+    if (regularizandoId){
+      const e = STATE.encomendas.find(x=>x.id===regularizandoId);
+      if (!e){ regularizandoId=null; return html(); }
+      return `
+        <div class="card" style="max-width:540px;margin:0 auto;border-color:var(--danger)">
+          <div style="font-weight:800;font-size:17px">⚠️ Regularizar registro (saiu sem baixa)</div>
+          <div class="muted" style="font-size:13.5px;margin-top:4px">Use isto quando a encomenda já saiu fisicamente da portaria, mas ninguém registrou a retirada corretamente. Isso <b>não</b> conta como uma entrega verificada por código — fica marcado como exceção, separado nos relatórios, com justificativa e o nome de quem regularizou.</div>
+          <div class="etiqueta" style="padding:12px;font-size:14px;margin-top:12px">
+            <span class="mono" style="font-weight:600">${esc(e.protocolo)}</span> · ${esc(e.nomeDest)} · Unid. ${esc(e.unidade)}<br>
+            <span class="muted">${esc(e.tipo)} · recebida ${fmtDT(e.recebidaEm)} por ${esc(e.porteiroReceb)}</span>
+          </div>
+          <label class="f">Justificativa *</label>
+          <input id="inJustReg" value="${esc(reg.justificativa)}" placeholder="Ex.: entregue ontem à noite e esqueceram de registrar">
+          <label class="f">Quem está regularizando agora (seu nome) *</label>
+          ${STATE.config.porteiros.length
+            ? `<select id="inPortReg"><option value="">Selecione…</option>${STATE.config.porteiros.map(p=>`<option ${p===reg.porteiro?"selected":""}>${esc(p)}</option>`).join("")}</select>`
+            : `<input id="inPortReg" value="${esc(reg.porteiro)}">`}
+          <div class="row" style="margin-top:18px">
+            <button class="primary" id="btnConfirmarReg" style="flex:1;background:var(--danger)">⚠️ Confirmar regularização</button>
+            <button class="ghost" id="btnCancelarReg">Cancelar</button>
+          </div>
+        </div>`;
+    }
     const normUnidP = s => norm(s).replace(/[^a-z0-9]/g,"");
     const chavePessoa = e => e.moradorId ? `id:${e.moradorId}` : `u:${normUnidP(e.unidade)}|n:${norm(e.nomeDest)}`;
     const gruposMap = new Map();
@@ -718,6 +742,7 @@ const PENDENTES = (() => {
             return `<a href="${linkWhats(telNum,msgTexto)}" target="_blank" class="link-wa-simples" data-id="${e.id}" style="text-decoration:none"><button class="wa" style="width:100%">💬 ${e.notificadaEm?"Reenviar aviso":"Avisar morador"}</button></a>`;
           })() : ""}
           <button class="primary retirar" data-id="${e.id}">🔑 Registrar retirada</button>
+          <button class="ghost regularizar-enc" data-id="${e.id}" style="color:var(--danger);font-size:12.5px;padding:6px 10px">⚠️ Já saiu sem baixa (só admin)</button>
           <button class="ghost excluir-enc" data-id="${e.id}" style="color:var(--danger);font-size:12.5px;padding:6px 10px">🗑️ Excluir (só admin)</button>
         </div>
       </div>`;
@@ -775,8 +800,39 @@ const PENDENTES = (() => {
       };
       return;
     }
+    if (regularizandoId){
+      const $ = id => document.getElementById(id);
+      const e = STATE.encomendas.find(x=>x.id===regularizandoId);
+      $("inJustReg").oninput = ev => { reg.justificativa = ev.target.value; };
+      if ($("inPortReg")){
+        $("inPortReg").onchange = ev => { reg.porteiro = ev.target.value; };
+        if ($("inPortReg").tagName==="INPUT") $("inPortReg").oninput = ev => { reg.porteiro = ev.target.value; };
+      }
+      $("btnCancelarReg").onclick = () => { regularizandoId=null; render(); };
+      $("btnConfirmarReg").onclick = async () => {
+        if (!reg.justificativa.trim()) return flash("A justificativa é obrigatória.","err");
+        if (!reg.porteiro.trim()) return flash("Informe quem está regularizando.","err");
+        await db.collection("encomendas").doc(e.id).update({
+          status: "baixa_administrativa",
+          justificativaRegularizacao: reg.justificativa.trim(),
+          regularizadoPor: reg.porteiro.trim(),
+          regularizadoEm: new Date().toISOString(),
+        });
+        regularizandoId=null; reg={justificativa:"",porteiro:reg.porteiro};
+        flash("Registro regularizado — marcado como exceção, fora da lista de pendentes.");
+        render();
+      };
+      return;
+    }
     document.getElementById("buscaPend").oninput = e => { busca = e.target.value; render(); };
     document.querySelectorAll(".retirar").forEach(b => b.onclick = () => { retirandoId=b.dataset.id; codigoInf=""; r={quem:"",relacao:"Próprio morador",porteiro:STATE.config.porteiros[0]||"",semCodigo:false,justificativa:""}; render(); });
+    document.querySelectorAll(".regularizar-enc").forEach(b => b.onclick = async () => {
+      const ok = await pedirMaster();
+      if (!ok) return;
+      regularizandoId = b.dataset.id;
+      reg = { justificativa:"", porteiro:STATE.config.porteiros[0]||"" };
+      render();
+    });
     document.querySelectorAll(".ver-codigo").forEach(b => b.onclick = async () => {
       const id = b.dataset.id;
       if (codigosRevelados.has(id)){ codigosRevelados.delete(id); render(); return; }
@@ -1083,6 +1139,7 @@ const RELATORIOS = (() => {
       if (status==="entregues" && e.status!=="entregue") return false;
       if (status==="sem_aviso" && (e.status!=="pendente" || e.notificadaEm)) return false;
       if (status==="sem_codigo" && !(e.status==="entregue" && e.codigoValidado===false)) return false;
+      if (status==="regularizadas" && e.status!=="baixa_administrativa") return false;
       return true;
     });
   }
@@ -1092,6 +1149,7 @@ const RELATORIOS = (() => {
     const f = filtradas();
     const entregues = f.filter(e=>e.status==="entregue");
     const pend = f.filter(e=>e.status==="pendente");
+    const regularizadas = f.filter(e=>e.status==="baixa_administrativa");
     const tempos = entregues.map(e=>horasEntre(e.recebidaEm,e.entregueEm));
     const tMedio = tempos.length ? Math.round((tempos.reduce((a,b)=>a+b,0)/tempos.length)*10)/10 : 0;
     const naoAvisadas = pend.filter(e=>!e.notificadaEm).length;
@@ -1113,6 +1171,7 @@ const RELATORIOS = (() => {
               <option value="entregues" ${status==="entregues"?"selected":""}>Só entregues</option>
               <option value="sem_aviso" ${status==="sem_aviso"?"selected":""}>Pendentes sem aviso</option>
               <option value="sem_codigo" ${status==="sem_codigo"?"selected":""}>Entregues sem código</option>
+              <option value="regularizadas" ${status==="regularizadas"?"selected":""}>⚠️ Baixas administrativas</option>
             </select>
           </div>
           <button class="primary" id="rExport">⬇️ Exportar CSV (Excel)</button>
@@ -1122,7 +1181,7 @@ const RELATORIOS = (() => {
         ${erroCarga ? `<div style="color:var(--danger);font-size:13px;margin-top:10px">${esc(erroCarga)} <button class="ghost" id="rRecarregar" style="padding:4px 10px;font-size:12px">Tentar de novo</button></div>` : ""}
         <div class="muted" style="font-size:12px;margin-top:8px">O relatório mostra o período escolhido (padrão: últimos 30 dias). Para períodos maiores, ajuste as datas.</div>
       </div>
-      <div class="row" style="margin-bottom:16px">${kpi("Registradas",f.length)}${kpi("Aguardando retirada",pend.length,pend.length?"#8a5a00":"var(--ok)")}${kpi("Entregues",entregues.length,"var(--ok)")}${kpi("Tempo médio retirada",tempos.length?tMedio+"h":"—")}${kpi("Pendentes sem aviso",naoAvisadas,naoAvisadas?"var(--danger)":"var(--ok)")}${kpi("Entregas sem código",semCodigo,semCodigo?"var(--danger)":"var(--ok)")}</div>
+      <div class="row" style="margin-bottom:16px">${kpi("Registradas",f.length)}${kpi("Aguardando retirada",pend.length,pend.length?"#8a5a00":"var(--ok)")}${kpi("Entregues",entregues.length,"var(--ok)")}${kpi("Tempo médio retirada",tempos.length?tMedio+"h":"—")}${kpi("Pendentes sem aviso",naoAvisadas,naoAvisadas?"var(--danger)":"var(--ok)")}${kpi("Entregas sem código",semCodigo,semCodigo?"var(--danger)":"var(--ok)")}${kpi("⚠️ Baixas administrativas",regularizadas.length,regularizadas.length?"var(--danger)":"var(--ok)")}</div>
       ${topU.length?`<div class="card">
         <div style="font-weight:800;margin-bottom:12px">Volumes por unidade</div>
         ${topU.map(([u,n])=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -1135,13 +1194,24 @@ const RELATORIOS = (() => {
         <table><thead><tr><th>Foto</th><th>Protocolo</th><th>Unid.</th><th>Destinatário</th><th>Recebida</th><th>Status</th><th>Retirada</th></tr></thead>
         <tbody>
           ${f.length===0?`<tr><td colspan="7" class="center muted" style="padding:24px">Nenhum registro no período.</td></tr>`:""}
-          ${f.slice(0,150).map(e=>`<tr>
+          ${f.slice(0,150).map(e=>{
+            const statusTag = e.status==="entregue"
+              ? `<span class="tag" style="background:var(--okSoft);color:var(--ok)">${e.codigoValidado?"Entregue ✓ código":"Entregue s/ código"}</span>`
+              : e.status==="baixa_administrativa"
+              ? `<span class="tag" style="background:var(--dangerSoft);color:var(--danger)">⚠️ Baixa administrativa</span>`
+              : `<span class="tag" style="background:var(--kraftSoft);color:#8a5a00">Pendente</span>`;
+            const retiradaCol = e.entregueEm
+              ? `${fmtDT(e.entregueEm)}<br><span class="muted">${esc(e.retiradaPor)} (${esc(e.relacaoRetirada)})</span>`
+              : e.status==="baixa_administrativa"
+              ? `${fmtDT(e.regularizadoEm)}<br><span class="muted">por ${esc(e.regularizadoPor)}<br>"${esc(e.justificativaRegularizacao)}"</span>`
+              : "—";
+            return `<tr>
             <td>${e.thumb?`<img src="${e.thumb}" class="thumb rel-thumb" data-id="${e.id}" style="width:40px;height:40px">`:`<span class="muted">—</span>`}</td>
             <td class="mono" style="font-size:13px">${esc(e.protocolo)}</td><td style="font-weight:700">${esc(e.unidade)}</td><td>${esc(e.nomeDest)}</td>
             <td style="font-size:13px">${fmtDT(e.recebidaEm)}<br><span class="muted">${esc(e.porteiroReceb)}</span></td>
-            <td>${e.status==="entregue"?`<span class="tag" style="background:var(--okSoft);color:var(--ok)">${e.codigoValidado?"Entregue ✓ código":"Entregue s/ código"}</span>`:`<span class="tag" style="background:var(--kraftSoft);color:#8a5a00">Pendente</span>`}</td>
-            <td style="font-size:13px">${e.entregueEm?`${fmtDT(e.entregueEm)}<br><span class="muted">${esc(e.retiradaPor)} (${esc(e.relacaoRetirada)})</span>`:"—"}</td>
-          </tr>`).join("")}
+            <td>${statusTag}</td>
+            <td style="font-size:13px">${retiradaCol}</td>
+          </tr>`;}).join("")}
         </tbody></table>
         ${f.some(e=>e.thumb) ? `<div class="muted" style="font-size:12px;padding:8px 12px">Toque numa foto para ampliar — funciona também para encomendas já entregues.</div>` : ""}
       </div>`;
@@ -1160,8 +1230,9 @@ const RELATORIOS = (() => {
     if ($("rRecarregar")) $("rRecarregar").onclick = () => { chaveCarregada=""; carregarHistorico(); };
     $("rExport").onclick = () => {
       const sep=";"; const escv = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
-      const head = ["Protocolo","Codigo retirada","Status","Unidade","Destinatario","Tipo","Transportadora","Rastreio","Foto","Recebida em","Porteiro recebimento","Notificada em","Entregue em","Retirada por","Relacao","Codigo validado","Justificativa sem codigo","Porteiro entrega","Horas ate retirada","Observacoes"];
-      const rows = filtradas().map(e=>[e.protocolo,e.codigoRetirada||"",e.status==="entregue"?"Entregue":"Pendente",e.unidade,e.nomeDest,e.tipo,e.transportadora,e.rastreio,e.temFoto?"Sim":"Nao",fmtDT(e.recebidaEm),e.porteiroReceb,e.notificadaEm?fmtDT(e.notificadaEm):"",e.entregueEm?fmtDT(e.entregueEm):"",e.retiradaPor||"",e.relacaoRetirada||"",e.status==="entregue"?(e.codigoValidado?"Sim":"Nao"):"",e.justificativaSemCodigo||"",e.porteiroEntrega||"",e.entregueEm?String(horasEntre(e.recebidaEm,e.entregueEm)).replace(".",","):"",e.obs]);
+      const statusTxt = e => e.status==="entregue" ? "Entregue" : e.status==="baixa_administrativa" ? "Baixa administrativa" : "Pendente";
+      const head = ["Protocolo","Codigo retirada","Status","Unidade","Destinatario","Tipo","Transportadora","Rastreio","Foto","Recebida em","Porteiro recebimento","Notificada em","Entregue em","Retirada por","Relacao","Codigo validado","Justificativa sem codigo","Porteiro entrega","Baixa administrativa em","Regularizado por","Justificativa regularizacao","Horas ate retirada","Observacoes"];
+      const rows = filtradas().map(e=>[e.protocolo,e.codigoRetirada||"",statusTxt(e),e.unidade,e.nomeDest,e.tipo,e.transportadora,e.rastreio,e.temFoto?"Sim":"Nao",fmtDT(e.recebidaEm),e.porteiroReceb,e.notificadaEm?fmtDT(e.notificadaEm):"",e.entregueEm?fmtDT(e.entregueEm):"",e.retiradaPor||"",e.relacaoRetirada||"",e.status==="entregue"?(e.codigoValidado?"Sim":"Nao"):"",e.justificativaSemCodigo||"",e.porteiroEntrega||"",e.regularizadoEm?fmtDT(e.regularizadoEm):"",e.regularizadoPor||"",e.justificativaRegularizacao||"",e.entregueEm?String(horasEntre(e.recebidaEm,e.entregueEm)).replace(".",","):"",e.obs]);
       const csv = "\uFEFF"+[head,...rows].map(r=>r.map(escv).join(sep)).join("\r\n");
       const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
       const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`encomendas_portaria_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
@@ -1173,6 +1244,7 @@ const RELATORIOS = (() => {
     const list = filtradas().slice().sort((a,b)=> new Date(a.recebidaEm) - new Date(b.recebidaEm));
     const entregues = list.filter(e=>e.status==="entregue");
     const pend = list.filter(e=>e.status==="pendente");
+    const regularizadas = list.filter(e=>e.status==="baixa_administrativa");
     const semCodigo = entregues.filter(e=>e.codigoValidado===false).length;
     const naoAvisadas = pend.filter(e=>!e.notificadaEm).length;
 
@@ -1202,20 +1274,26 @@ const RELATORIOS = (() => {
     doc.setFont("helvetica","normal"); doc.setFontSize(9.5);
     const resumo = [
       `Total de encomendas registradas: ${list.length}`,
-      `Entregues: ${entregues.length}    Aguardando retirada: ${pend.length}`,
+      `Entregues: ${entregues.length}    Aguardando retirada: ${pend.length}    Baixas administrativas: ${regularizadas.length}`,
       `Entregas sem validação de código (exceções): ${semCodigo}`,
       `Pendentes ainda sem aviso ao morador: ${naoAvisadas}`,
     ];
     resumo.forEach((line,i) => doc.text(line, margin, 116 + i*13));
 
     // Tabela
+    const statusPdf = e => e.status==="entregue" ? fmtDT(e.entregueEm) : e.status==="baixa_administrativa" ? `Baixa admin. (${fmtDT(e.regularizadoEm)})` : "Pendente";
+    const retiradaPdf = e => {
+      if (e.status==="entregue") return `${e.retiradaPor || ""} (${e.relacaoRetirada || ""})`;
+      if (e.status==="baixa_administrativa") return `${e.regularizadoPor||""} — "${e.justificativaRegularizacao||""}"`;
+      return "—";
+    };
     const body = list.map(e => [
       e.protocolo, e.unidade, e.nomeDest, e.tipo,
       fmtDT(e.recebidaEm), e.porteiroReceb,
       e.notificadaEm ? fmtDT(e.notificadaEm) : "—",
-      e.status === "entregue" ? fmtDT(e.entregueEm) : "Pendente",
-      e.status === "entregue" ? `${e.retiradaPor || ""} (${e.relacaoRetirada || ""})` : "—",
-      e.status === "entregue" ? (e.codigoValidado ? "Sim" : `Não${e.justificativaSemCodigo ? " — " + e.justificativaSemCodigo : ""}`) : "—",
+      statusPdf(e),
+      retiradaPdf(e),
+      e.status === "entregue" ? (e.codigoValidado ? "Sim" : `Não${e.justificativaSemCodigo ? " — " + e.justificativaSemCodigo : ""}`) : (e.status==="baixa_administrativa" ? "N/A (baixa admin.)" : "—"),
     ]);
     doc.autoTable({
       startY: 116 + resumo.length*13 + 12,
