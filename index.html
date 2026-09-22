@@ -297,6 +297,11 @@ function iniciar(){
     if (!user) return;
 
     db.collection("meta").doc("config").onSnapshot(doc => {
+      // Só trata "não existe" como verdade quando isso vem CONFIRMADO pelo servidor.
+      // Se vier do cache local (aparelho ainda não conversou com o servidor), pode
+      // ser um falso alarme (cache vazio) — nesse caso, espera a confirmação real,
+      // em vez de arriscar sobrescrever a configuração de verdade com um registro vazio.
+      if (!doc.exists && doc.metadata.fromCache) return;
       STATE.config = doc.exists ? doc.data() : { condominio:"", porteiros:[], seq:0 };
       if (!doc.exists) db.collection("meta").doc("config").set(STATE.config);
       CONFIG_LOADED = true;
