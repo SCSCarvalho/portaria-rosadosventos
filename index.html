@@ -1094,10 +1094,21 @@ const RELATORIOS = (() => {
   const fmtInput = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   // período padrão: últimos 30 dias (evita carregar a história inteira)
   let de = fmtInput(new Date(Date.now()-30*864e5)), ate = fmtInput(new Date()), unid="", status="todos";
+  let agruparPorBloco = false;
   let historico = [];        // encomendas do período carregado (pendentes + entregues)
   let chaveCarregada = "";   // qual período está carregado
   let carregando = false;
   let erroCarga = "";
+  // mesma lógica usada em Moradores: separa prefixo (bloco/letras) e número do apto,
+  // para ordenar/agrupar de forma natural (A-101, A-102... B-101...)
+  const chaveOrdenacaoUnidade = (unidadeStr) => {
+    const s = (unidadeStr||"").trim();
+    const m = s.match(/^([^\d]*)(\d+)?(.*)$/);
+    const prefixo = (m && m[1] || "").trim().toUpperCase() || "(sem bloco)";
+    const numero = m && m[2] ? parseInt(m[2],10) : 0;
+    const resto = (m && m[3] || "").trim().toUpperCase();
+    return { prefixo, numero, resto, original: s };
+  };
 
   function periodoISO(){
     const dIni = de ? new Date(de+"T00:00:00") : new Date(Date.now()-30*864e5);
@@ -1130,7 +1141,7 @@ const RELATORIOS = (() => {
     return lista.sort((a,b) => (b.recebidaEm||"").localeCompare(a.recebidaEm||""));
   }
   function filtradas(){
-    return base().filter(e=>{
+    const lista = base().filter(e=>{
       const d = new Date(e.recebidaEm);
       if (de && d < new Date(de+"T00:00:00")) return false;
       if (ate && d > new Date(ate+"T23:59:59")) return false;
@@ -1142,6 +1153,16 @@ const RELATORIOS = (() => {
       if (status==="regularizadas" && e.status!=="baixa_administrativa") return false;
       return true;
     });
+    if (agruparPorBloco){
+      return lista.sort((a,b)=>{
+        const ka = chaveOrdenacaoUnidade(a.unidade), kb = chaveOrdenacaoUnidade(b.unidade);
+        return ka.prefixo.localeCompare(kb.prefixo,"pt-BR")
+          || (ka.numero - kb.numero)
+          || ka.resto.localeCompare(kb.resto,"pt-BR")
+          || (b.recebidaEm||"").localeCompare(a.recebidaEm||"");
+      });
+    }
+    return lista;
   }
   function html(){
     const { ini, fim } = periodoISO();
@@ -1177,6 +1198,9 @@ const RELATORIOS = (() => {
           <button class="primary" id="rExport">⬇️ Exportar CSV (Excel)</button>
           <button class="ghost" id="rExportPdf">📄 Exportar PDF (comprovante)</button>
         </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;font-weight:600;cursor:pointer">
+          <input type="checkbox" id="rAgrupar" style="width:auto" ${agruparPorBloco?"checked":""}> 🏢 Agrupar por bloco/unidade (em vez de por data)
+        </label>
         ${carregando ? `<div class="muted" style="font-size:13px;margin-top:10px">⏳ Carregando histórico do período…</div>` : ""}
         ${erroCarga ? `<div style="color:var(--danger);font-size:13px;margin-top:10px">${esc(erroCarga)} <button class="ghost" id="rRecarregar" style="padding:4px 10px;font-size:12px">Tentar de novo</button></div>` : ""}
         <div class="muted" style="font-size:12px;margin-top:8px">O relatório mostra o período escolhido (padrão: últimos 30 dias). Para períodos maiores, ajuste as datas.</div>
@@ -1194,7 +1218,18 @@ const RELATORIOS = (() => {
         <table><thead><tr><th>Foto</th><th>Protocolo</th><th>Unid.</th><th>Destinatário</th><th>Recebida</th><th>Status</th><th>Retirada</th></tr></thead>
         <tbody>
           ${f.length===0?`<tr><td colspan="7" class="center muted" style="padding:24px">Nenhum registro no período.</td></tr>`:""}
-          ${f.slice(0,150).map(e=>{
+          ${(() => {
+            let ultimoPrefixo = null;
+            return f.slice(0,300).map(e=>{
+              let cabecalhoBloco = "";
+              if (agruparPorBloco){
+                const prefixo = chaveOrdenacaoUnidade(e.unidade).prefixo;
+                if (prefixo !== ultimoPrefixo){
+                  ultimoPrefixo = prefixo;
+                  const qtdNoBloco = f.filter(x=>chaveOrdenacaoUnidade(x.unidade).prefixo===prefixo).length;
+                  cabecalhoBloco = `<tr><td colspan="7" style="background:var(--primarySoft);color:var(--primary);font-weight:800;padding:8px 12px">🏢 Bloco ${esc(prefixo)} — ${qtdNoBloco} registro(s)</td></tr>`;
+                }
+              }
             const statusTag = e.status==="entregue"
               ? `<span class="tag" style="background:var(--okSoft);color:var(--ok)">${e.codigoValidado?"Entregue ✓ código":"Entregue s/ código"}</span>`
               : e.status==="baixa_administrativa"
@@ -1205,13 +1240,14 @@ const RELATORIOS = (() => {
               : e.status==="baixa_administrativa"
               ? `${fmtDT(e.regularizadoEm)}<br><span class="muted">por ${esc(e.regularizadoPor)}<br>"${esc(e.justificativaRegularizacao)}"</span>`
               : "—";
-            return `<tr>
+            return `${cabecalhoBloco}<tr>
             <td>${e.thumb?`<img src="${e.thumb}" class="thumb rel-thumb" data-id="${e.id}" style="width:40px;height:40px">`:`<span class="muted">—</span>`}</td>
             <td class="mono" style="font-size:13px">${esc(e.protocolo)}</td><td style="font-weight:700">${esc(e.unidade)}</td><td>${esc(e.nomeDest)}</td>
             <td style="font-size:13px">${fmtDT(e.recebidaEm)}<br><span class="muted">${esc(e.porteiroReceb)}</span></td>
             <td>${statusTag}</td>
             <td style="font-size:13px">${retiradaCol}</td>
-          </tr>`;}).join("")}
+          </tr>`;}).join("");
+          })()}
         </tbody></table>
         ${f.some(e=>e.thumb) ? `<div class="muted" style="font-size:12px;padding:8px 12px">Toque numa foto para ampliar — funciona também para encomendas já entregues.</div>` : ""}
       </div>`;
@@ -1227,6 +1263,7 @@ const RELATORIOS = (() => {
     $("rAte").onchange = e=>{ ate=e.target.value; render(); };
     $("rUnid").oninput = e=>{ unid=e.target.value; render(); };
     $("rStatus").onchange = e=>{ status=e.target.value; render(); };
+    $("rAgrupar").onchange = e=>{ agruparPorBloco=e.target.checked; render(); };
     if ($("rRecarregar")) $("rRecarregar").onclick = () => { chaveCarregada=""; carregarHistorico(); };
     $("rExport").onclick = () => {
       const sep=";"; const escv = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
@@ -1241,7 +1278,7 @@ const RELATORIOS = (() => {
   }
 
   function exportarPDF(){
-    const list = filtradas().slice().sort((a,b)=> new Date(a.recebidaEm) - new Date(b.recebidaEm));
+    const list = agruparPorBloco ? filtradas().slice() : filtradas().slice().sort((a,b)=> new Date(a.recebidaEm) - new Date(b.recebidaEm));
     const entregues = list.filter(e=>e.status==="entregue");
     const pend = list.filter(e=>e.status==="pendente");
     const regularizadas = list.filter(e=>e.status==="baixa_administrativa");
@@ -1287,14 +1324,28 @@ const RELATORIOS = (() => {
       if (e.status==="baixa_administrativa") return `${e.regularizadoPor||""} — "${e.justificativaRegularizacao||""}"`;
       return "—";
     };
-    const body = list.map(e => [
-      e.protocolo, e.unidade, e.nomeDest, e.tipo,
-      fmtDT(e.recebidaEm), e.porteiroReceb,
-      e.notificadaEm ? fmtDT(e.notificadaEm) : "—",
-      statusPdf(e),
-      retiradaPdf(e),
-      e.status === "entregue" ? (e.codigoValidado ? "Sim" : `Não${e.justificativaSemCodigo ? " — " + e.justificativaSemCodigo : ""}`) : (e.status==="baixa_administrativa" ? "N/A (baixa admin.)" : "—"),
-    ]);
+    let body = [];
+    if (agruparPorBloco){
+      let ultimoPrefixo = null;
+      list.forEach(e => {
+        const prefixo = chaveOrdenacaoUnidade(e.unidade).prefixo;
+        if (prefixo !== ultimoPrefixo){
+          ultimoPrefixo = prefixo;
+          const qtd = list.filter(x=>chaveOrdenacaoUnidade(x.unidade).prefixo===prefixo).length;
+          body.push([{ content: `🏢 Bloco ${prefixo} — ${qtd} registro(s)`, colSpan: 10, styles: { fillColor:[22,65,74], textColor:[255,255,255], fontStyle:"bold", halign:"left" } }]);
+        }
+        body.push([e.protocolo, e.unidade, e.nomeDest, e.tipo, fmtDT(e.recebidaEm), e.porteiroReceb, e.notificadaEm?fmtDT(e.notificadaEm):"—", statusPdf(e), retiradaPdf(e), e.status==="entregue"?(e.codigoValidado?"Sim":`Não${e.justificativaSemCodigo?" — "+e.justificativaSemCodigo:""}`):(e.status==="baixa_administrativa"?"N/A (baixa admin.)":"—")]);
+      });
+    } else {
+      body = list.map(e => [
+        e.protocolo, e.unidade, e.nomeDest, e.tipo,
+        fmtDT(e.recebidaEm), e.porteiroReceb,
+        e.notificadaEm ? fmtDT(e.notificadaEm) : "—",
+        statusPdf(e),
+        retiradaPdf(e),
+        e.status === "entregue" ? (e.codigoValidado ? "Sim" : `Não${e.justificativaSemCodigo ? " — " + e.justificativaSemCodigo : ""}`) : (e.status==="baixa_administrativa" ? "N/A (baixa admin.)" : "—"),
+      ]);
+    }
     doc.autoTable({
       startY: 116 + resumo.length*13 + 12,
       margin: { left: margin, right: margin },
