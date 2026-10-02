@@ -264,11 +264,13 @@ function bindGate(){
 
 async function pedirMaster(){
   if (!STATE.config.senhaMasterHash) return true; // ainda não configurada: libera, mas ideal definir em Ajustes
-  if (sessionStorage.getItem("portariaMaster") === STATE.config.senhaMasterHash) return true;
+  // Nunca "lembra" a senha master neste aparelho — pede sempre, toda vez, sem exceção.
+  // (antes ficava liberado até a aba fechar; isso foi removido a pedido da síndica,
+  // porque em tablet compartilhado a aba raramente é fechada de verdade)
   const senha = window.prompt("🔑 Senha MASTER (síndica) necessária para esta ação:");
   if (senha == null) return false;
   const hash = await sha256(senha.trim());
-  if (hash === STATE.config.senhaMasterHash){ sessionStorage.setItem("portariaMaster", hash); return true; }
+  if (hash === STATE.config.senhaMasterHash) return true;
   flash("Senha master incorreta.","err");
   return false;
 }
@@ -1448,9 +1450,8 @@ const AJUSTES = (() => {
       if (senha.trim().length < 4) return flash("Use uma senha com pelo menos 4 caracteres.","err");
       const hash = await sha256(senha.trim());
       await db.collection("meta").doc("config").set({...STATE.config, senhaMasterHash:hash},{merge:true});
-      sessionStorage.setItem("portariaMaster", hash);
       $("aNovaMaster").value = "";
-      flash("Senha master salva! Guarde-a só com você.");
+      flash("Senha master salva! Guarde-a só com você. Ela será pedida a cada ação sensível, sem exceção.");
     };
     document.querySelectorAll(".rmPort").forEach(el=>el.onclick=async ()=>{
       const list = (STATE.config.porteiros||[]).filter(p=>p!==el.dataset.p);
